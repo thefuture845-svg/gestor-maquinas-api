@@ -1,15 +1,65 @@
-import base64, hashlib, hmac, json, os, sqlite3, time
+import base64
+import hashlib
+import hmac
+import json
+import os
+import sqlite3
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
 DB = "gestor_maquinas.db"
-TABLES = ["machines", "clients", "maintenance", "stock"]
 
-ADMIN_USER = os.environ.get("GESTOR_ADMIN_USER", "julio")
-ADMIN_PASSWORD = os.environ.get(
-    "GESTOR_ADMIN_PASSWORD",
-    "change-this-password"
-)
+TABLES = [
+    "machines",
+    "clients",
+    "maintenance",
+    "stock"
+]
+
+USERS = {
+    "julio": {
+        "name": "Júlio Francisco",
+        "role": "Administrador",
+        "password": os.environ.get(
+            "GESTOR_ADMIN_PASSWORD",
+            "change-this-password"
+        )
+    },
+    "celso": {
+        "name": "Celso",
+        "role": "Técnico",
+        "password": os.environ.get(
+            "GESTOR_CELSO_PASSWORD",
+            "Celso-temporario-2026"
+        )
+    },
+    "daniel": {
+        "name": "Daniel",
+        "role": "Técnico",
+        "password": os.environ.get(
+            "GESTOR_DANIEL_PASSWORD",
+            "Daniel-temporario-2026"
+        )
+    },
+    "nuno": {
+        "name": "Nuno Voabil",
+        "role": "Cliente",
+        "password": os.environ.get(
+            "GESTOR_NUNO_PASSWORD",
+            "Nuno-temporario-2026"
+        )
+    },
+    "cinderella": {
+        "name": "Colégio Cinderella",
+        "role": "Cliente",
+        "password": os.environ.get(
+            "GESTOR_CINDERELLA_PASSWORD",
+            "Cinderella-temporario-2026"
+        )
+    }
+}
+
 TOKEN_SECRET = os.environ.get(
     "GESTOR_TOKEN_SECRET",
     "change-this-token-secret"
@@ -17,9 +67,10 @@ TOKEN_SECRET = os.environ.get(
 
 
 def db():
-    c = sqlite3.connect(DB)
-    c.row_factory = sqlite3.Row
-    c.executescript("""
+    connection = sqlite3.connect(DB)
+    connection.row_factory = sqlite3.Row
+
+    connection.executescript("""
         CREATE TABLE IF NOT EXISTS machines(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             model TEXT,
@@ -54,39 +105,54 @@ def db():
             minimum INTEGER
         );
     """)
-    return c
+
+    return connection
 
 
-def make_token(user):
-    payload = f"{user}:{int(time.time()) + 86400}"
+def create_token(username, role):
+    payload = {
+        "user": username,
+        "role": role,
+        "expires": int(time.time()) + 86400
+    }
+
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload).encode()
+    ).decode()
+
     signature = hmac.new(
         TOKEN_SECRET.encode(),
-        payload.encode(),
+        encoded.encode(),
         hashlib.sha256
     ).hexdigest()
 
-    token = f"{payload}:{signature}"
-    return base64.urlsafe_b64encode(token.encode()).decode()
+    return encoded + "." + signature
 
 
-def valid_token(value):
+def read_token(token):
     try:
-        raw = base64.urlsafe_b64decode(value.encode()).decode()
-        user, expires, signature = raw.rsplit(":", 2)
+        encoded, signature = token.split(".", 1)
 
-        payload = f"{user}:{expires}"
         expected = hmac.new(
             TOKEN_SECRET.encode(),
-            payload.encode(),
+            encoded.encode(),
             hashlib.sha256
         ).hexdigest()
 
-        return (
-            int(expires) > time.time()
-            and hmac.compare_digest(signature, expected)
+        if not hmac.compare_digest(signature, expected):
+            return None
+
+        payload = json.loads(
+            base64.urlsafe_b64decode(encoded.encode()).decode()
         )
+
+        if payload["expires"] < time.time():
+            return None
+
+        return payload
+
     except Exception:
-        return False
+        return None
 
 
 class API(BaseHTTPRequestHandler):
@@ -109,28 +175,45 @@ class API(BaseHTTPRequestHandler):
             "GET, POST, OPTIONS"
         )
 
-    def send_json(self, data, code=200):
-        self.send_response(code)
+    def send_json(self, data, status=200):
+        self.send_response(status)
         self.set_headers()
         self.end_headers()
         self.wfile.write(
             json.dumps(data, ensure_ascii=False).encode()
         )
 
-    def authorized(self):
+    def current_user(self):
         authorization = self.headers.get("Authorization", "")
 
-        if (
-            not authorization.startswith("Bearer ")
-            or not valid_token(authorization[7:])
-        ):
-            self.send_json(
-                {"error": "Acesso não autorizado"},
-                401
-            )
+        if not authorization.startswith("Bearer "):
+            return None
+
+        return read_token(authorization[7:])
+
+    def allowed(self, user, action, table):
+        if not user:
             return False
 
-        return True
+        role = user["role"]
+
+        if role == "Administrador":
+            return True
+
+        if role == "Técnico":
+            return table in [
+                "machines",
+                "maintenance",
+                "stock"
+            ]
+
+        if role == "Cliente":
+            return action == "GET" and table in [
+                "machines",
+                "maintenance"
+            ]
+
+        return False
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -146,8 +229,41 @@ class API(BaseHTTPRequestHandler):
                 "app": "Gestor Máquinas API"
             })
 
-        if not self.authorized():
-            return
+        user = self.current_user()
+
+        if path == "me":
+            if not user:
+                return self.send_json(
+                    {"error": "Acesso não autorizado"},
+                    401
+                )
+
+            account = USERS.get(user["user"])
+
+            return self.send_json({
+                "username": user["user"],
+                "name": account["name"],
+                "role": user["role"]
+            })
+
+        if path == "users":
+            if not user or user["role"] != "Administrador":
+                return self.send_json(
+                    {"error": "Apenas o administrador tem acesso"},
+                    403
+                )
+
+            result = []
+
+            for username, account in USERS.items():
+                result.append({
+                    "username": username,
+                    "name": account["name"],
+                    "role": account["role"],
+                    "active": True
+                })
+
+            return self.send_json(result)
 
         table = path.split("/")[-1]
 
@@ -157,55 +273,82 @@ class API(BaseHTTPRequestHandler):
                 404
             )
 
+        if not self.allowed(user, "GET", table):
+            return self.send_json(
+                {"error": "Sem permissão para esta área"},
+                403
+            )
+
         connection = db()
+
         rows = [
             dict(row)
             for row in connection.execute(
                 f"SELECT * FROM {table} ORDER BY id DESC"
             )
         ]
+
         connection.close()
 
-        self.send_json(rows)
+        return self.send_json(rows)
 
     def do_POST(self):
-        route = urlparse(self.path).path.strip("/")
-        content_length = int(
+        path = urlparse(self.path).path.strip("/")
+
+        length = int(
             self.headers.get("Content-Length", 0) or 0
         )
 
-        body = self.rfile.read(content_length)
+        body = self.rfile.read(length)
         data = json.loads(body or "{}")
 
-        if route == "login":
-            valid_user = hmac.compare_digest(
-                str(data.get("user", "")),
-                ADMIN_USER
+        if path == "login":
+            username = str(data.get("user", "")).lower()
+            password = str(data.get("password", ""))
+
+            account = USERS.get(username)
+
+            if not account:
+                return self.send_json(
+                    {"error": "Credenciais incorretas"},
+                    401
+                )
+
+            if not hmac.compare_digest(
+                password,
+                account["password"]
+            ):
+                return self.send_json(
+                    {"error": "Credenciais incorretas"},
+                    401
+                )
+
+            token = create_token(
+                username,
+                account["role"]
             )
-            valid_password = hmac.compare_digest(
-                str(data.get("password", "")),
-                ADMIN_PASSWORD
-            )
 
-            if valid_user and valid_password:
-                return self.send_json({
-                    "token": make_token(ADMIN_USER)
-                })
+            return self.send_json({
+                "token": token,
+                "username": username,
+                "name": account["name"],
+                "role": account["role"]
+            })
 
-            return self.send_json(
-                {"error": "Credenciais incorretas"},
-                401
-            )
+        user = self.current_user()
 
-        if not self.authorized():
-            return
-
-        table = route.split("/")[-1]
+        table = path.split("/")[-1]
 
         if table not in TABLES:
             return self.send_json(
                 {"error": "Rota não encontrada"},
                 404
+            )
+
+        if not self.allowed(user, "POST", table):
+            return self.send_json(
+                {"error": "Sem permissão para esta área"},
+                403
             )
 
         allowed_fields = {
@@ -238,36 +381,43 @@ class API(BaseHTTPRequestHandler):
         }[table]
 
         clean_data = {
-            key: data.get(key, "")
-            for key in allowed_fields
+            field: data.get(field, "")
+            for field in allowed_fields
         }
 
         columns = ",".join(clean_data.keys())
         values = list(clean_data.values())
-        placeholders = ",".join("?" * len(values))
+        marks = ",".join("?" * len(values))
 
         connection = db()
+
         cursor = connection.execute(
             f"""
             INSERT INTO {table} ({columns})
-            VALUES ({placeholders})
+            VALUES ({marks})
             """,
             values
         )
+
         connection.commit()
 
         clean_data["id"] = cursor.lastrowid
+
         connection.close()
 
-        self.send_json(clean_data, 201)
+        return self.send_json(clean_data, 201)
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8080"))
+    port = int(
+        os.environ.get("PORT", "8080")
+    )
 
     db().close()
 
-    print(f"Gestor Máquinas API na porta {port}")
+    print(
+        f"Gestor Máquinas API na porta {port}"
+    )
 
     HTTPServer(
         ("0.0.0.0", port),
