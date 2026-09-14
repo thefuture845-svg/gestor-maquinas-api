@@ -38,6 +38,8 @@ class API(BaseHTTPRequestHandler):
         return True
     def do_OPTIONS(self): self.send_response(204); self.headers(); self.end_headers()
     def do_GET(self):
+        if urlparse(self.path).path.strip('/') == '':
+            return self.send_json({'status': 'ok', 'app': 'Gestor Máquinas API'})
         if not self.authorized(): return
         table=urlparse(self.path).path.strip('/').split('/')[-1]
         if table not in TABLES: return self.send_json({'error':'Rota não encontrada'},404)
@@ -55,5 +57,4 @@ class API(BaseHTTPRequestHandler):
         data={k:data.get(k,'') for k in allowed}; cols=','.join(data); vals=list(data.values()); q=','.join('?'*len(vals)); c=db(); cur=c.execute(f'INSERT INTO {table} ({cols}) VALUES ({q})',vals); c.commit(); data['id']=cur.lastrowid; c.close(); self.send_json(data,201)
 
 if __name__=='__main__':
-    if ADMIN_PASSWORD=='change-this-password' or TOKEN_SECRET=='change-this-token-secret': print('AVISO: configure GESTOR_ADMIN_PASSWORD e GESTOR_TOKEN_SECRET antes de publicar.')
-    db().close(); print('Gestor Máquinas API: http://0.0.0.0:8080'); HTTPServer(('0.0.0.0',8080),API).serve_forever()
+    port=int(os.environ.get('PORT','8080')); db().close(); print(f'Gestor Máquinas API na porta {port}'); HTTPServer(('0.0.0.0',port),API).serve_forever()
