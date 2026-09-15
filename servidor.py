@@ -12,15 +12,21 @@ from urllib.parse import urlparse
 DATABASE = "gestor_maquinas.db"
 PORT = int(os.environ.get("PORT", "8080"))
 
-ADMIN_USER = os.environ.get("GESTOR_ADMIN_USER", "julio")
+ADMIN_USER = os.environ.get(
+    "GESTOR_ADMIN_USER",
+    "julio"
+).strip().lower()
+
 ADMIN_PASSWORD = os.environ.get(
     "GESTOR_ADMIN_PASSWORD",
     "change-this-password"
-)
+).strip()
+
 TOKEN_SECRET = os.environ.get(
     "GESTOR_TOKEN_SECRET",
     "change-this-token-secret"
-)
+).strip()
+
 
 USERS = {
     ADMIN_USER: {
@@ -29,43 +35,48 @@ USERS = {
         "password": ADMIN_PASSWORD,
         "client": ""
     },
+
     "celso": {
         "name": "Celso",
         "role": "Técnico",
         "password": os.environ.get(
             "GESTOR_CELSO_PASSWORD",
-            "Celso-temporario-2026"
-        ),
+            ""
+        ).strip(),
         "client": ""
     },
+
     "daniel": {
         "name": "Daniel",
         "role": "Técnico",
         "password": os.environ.get(
             "GESTOR_DANIEL_PASSWORD",
-            "Daniel-temporario-2026"
-        ),
+            ""
+        ).strip(),
         "client": ""
     },
+
     "nuno": {
         "name": "Nuno Voabil",
         "role": "Cliente",
         "password": os.environ.get(
             "GESTOR_NUNO_PASSWORD",
-            "Nuno-temporario-2026"
-        ),
+            ""
+        ).strip(),
         "client": "Nuno Voabil"
     },
+
     "cinderella": {
         "name": "Colégio Cinderella",
         "role": "Cliente",
         "password": os.environ.get(
             "GESTOR_CINDERELLA_PASSWORD",
-            "Cinderella-temporario-2026"
-        ),
+            ""
+        ).strip(),
         "client": "Colégio Cinderella"
     }
 }
+
 
 FIELDS = {
     "machines": [
@@ -78,11 +89,13 @@ FIELDS = {
         "toner",
         "notes"
     ],
+
     "clients": [
         "name",
         "phone",
         "location"
     ],
+
     "maintenance": [
         "date",
         "machine",
@@ -91,6 +104,7 @@ FIELDS = {
         "status",
         "notes"
     ],
+
     "stock": [
         "name",
         "compatibility",
@@ -100,7 +114,7 @@ FIELDS = {
 }
 
 
-def get_database():
+def database():
     connection = sqlite3.connect(DATABASE)
     connection.row_factory = sqlite3.Row
 
@@ -178,38 +192,41 @@ def create_token(username):
     payload = f"{username}:{expires}"
 
     signature = hmac.new(
-        TOKEN_SECRET.encode(),
-        payload.encode(),
+        TOKEN_SECRET.encode("utf-8"),
+        payload.encode("utf-8"),
         hashlib.sha256
     ).hexdigest()
 
-    value = f"{payload}:{signature}"
+    raw = f"{payload}:{signature}"
 
     return base64.urlsafe_b64encode(
-        value.encode()
-    ).decode()
+        raw.encode("utf-8")
+    ).decode("utf-8")
 
 
-def get_username_from_token(token):
+def read_token(token):
     try:
         decoded = base64.urlsafe_b64decode(
-            token.encode()
-        ).decode()
+            token.encode("utf-8")
+        ).decode("utf-8")
 
         username, expires, signature = decoded.rsplit(":", 2)
 
         payload = f"{username}:{expires}"
 
-        expected = hmac.new(
-            TOKEN_SECRET.encode(),
-            payload.encode(),
+        expected_signature = hmac.new(
+            TOKEN_SECRET.encode("utf-8"),
+            payload.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
 
         if int(expires) <= int(time.time()):
             return None
 
-        if not hmac.compare_digest(signature, expected):
+        if not hmac.compare_digest(
+            signature,
+            expected_signature
+        ):
             return None
 
         if username not in USERS:
@@ -228,14 +245,17 @@ class GestorAPI(BaseHTTPRequestHandler):
             "Content-Type",
             "application/json; charset=utf-8"
         )
+
         self.send_header(
             "Access-Control-Allow-Origin",
             "*"
         )
+
         self.send_header(
             "Access-Control-Allow-Headers",
             "Content-Type, Authorization"
         )
+
         self.send_header(
             "Access-Control-Allow-Methods",
             "GET, POST, OPTIONS"
@@ -246,12 +266,12 @@ class GestorAPI(BaseHTTPRequestHandler):
         self.send_headers()
         self.end_headers()
 
-        self.wfile.write(
-            json.dumps(
-                data,
-                ensure_ascii=False
-            ).encode()
-        )
+        content = json.dumps(
+            data,
+            ensure_ascii=False
+        ).encode("utf-8")
+
+        self.wfile.write(content)
 
     def read_body(self):
         try:
@@ -264,12 +284,14 @@ class GestorAPI(BaseHTTPRequestHandler):
             if not content:
                 return {}
 
-            return json.loads(content.decode())
+            return json.loads(
+                content.decode("utf-8")
+            )
 
         except Exception:
             return {}
 
-    def get_logged_user(self):
+    def logged_user(self):
         authorization = self.headers.get(
             "Authorization",
             ""
@@ -278,11 +300,12 @@ class GestorAPI(BaseHTTPRequestHandler):
         if not authorization.startswith("Bearer "):
             return None
 
-        token = authorization[7:]
-        return get_username_from_token(token)
+        token = authorization[7:].strip()
+
+        return read_token(token)
 
     def require_login(self):
-        username = self.get_logged_user()
+        username = self.logged_user()
 
         if not username:
             self.send_json(
@@ -291,6 +314,7 @@ class GestorAPI(BaseHTTPRequestHandler):
                 },
                 401
             )
+
             return None
 
         return username
@@ -308,6 +332,7 @@ class GestorAPI(BaseHTTPRequestHandler):
                 },
                 403
             )
+
             return None
 
         return username
@@ -318,7 +343,9 @@ class GestorAPI(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        route = urlparse(self.path).path.strip("/")
+        route = urlparse(
+            self.path
+        ).path.strip("/")
 
         if route == "":
             self.send_json(
@@ -327,6 +354,7 @@ class GestorAPI(BaseHTTPRequestHandler):
                     "app": "Gestor Máquinas API"
                 }
             )
+
             return
 
         username = self.require_login()
@@ -345,6 +373,7 @@ class GestorAPI(BaseHTTPRequestHandler):
                     "client": user["client"]
                 }
             )
+
             return
 
         if route == "users":
@@ -355,6 +384,7 @@ class GestorAPI(BaseHTTPRequestHandler):
                     },
                     403
                 )
+
                 return
 
             result = []
@@ -380,9 +410,10 @@ class GestorAPI(BaseHTTPRequestHandler):
                 },
                 404
             )
+
             return
 
-        connection = get_database()
+        connection = database()
 
         rows = connection.execute(
             f"SELECT * FROM {route} ORDER BY id DESC"
@@ -407,16 +438,16 @@ class GestorAPI(BaseHTTPRequestHandler):
                     if item.get("name") == user["client"]
                 ]
 
-            elif route == "maintenance":
-                result = []
-
-            elif route == "stock":
+            elif route in ["maintenance", "stock"]:
                 result = []
 
         self.send_json(result)
 
     def do_POST(self):
-        route = urlparse(self.path).path.strip("/")
+        route = urlparse(
+            self.path
+        ).path.strip("/")
+
         data = self.read_body()
 
         if route == "login":
@@ -426,7 +457,7 @@ class GestorAPI(BaseHTTPRequestHandler):
 
             password = str(
                 data.get("password", "")
-            )
+            ).strip()
 
             user = USERS.get(username)
 
@@ -437,11 +468,16 @@ class GestorAPI(BaseHTTPRequestHandler):
                     },
                     401
                 )
+
                 return
+
+            saved_password = str(
+                user["password"]
+            ).strip()
 
             if not hmac.compare_digest(
                 password,
-                str(user["password"])
+                saved_password
             ):
                 self.send_json(
                     {
@@ -449,6 +485,7 @@ class GestorAPI(BaseHTTPRequestHandler):
                     },
                     401
                 )
+
                 return
 
             self.send_json(
@@ -460,6 +497,7 @@ class GestorAPI(BaseHTTPRequestHandler):
                     "client": user["client"]
                 }
             )
+
             return
 
         username = self.require_admin()
@@ -474,6 +512,7 @@ class GestorAPI(BaseHTTPRequestHandler):
                 },
                 404
             )
+
             return
 
         values = {}
@@ -481,7 +520,11 @@ class GestorAPI(BaseHTTPRequestHandler):
         for field in FIELDS[route]:
             value = data.get(field, "")
 
-            if field in ["counter", "quantity", "minimum"]:
+            if field in [
+                "counter",
+                "quantity",
+                "minimum"
+            ]:
                 try:
                     value = int(value or 0)
                 except Exception:
@@ -494,7 +537,7 @@ class GestorAPI(BaseHTTPRequestHandler):
             ["?"] * len(values)
         )
 
-        connection = get_database()
+        connection = database()
 
         cursor = connection.execute(
             f"""
@@ -507,10 +550,9 @@ class GestorAPI(BaseHTTPRequestHandler):
 
         connection.commit()
 
-        new_id = cursor.lastrowid
-        connection.close()
+        values["id"] = cursor.lastrowid
 
-        values["id"] = new_id
+        connection.close()
 
         self.send_json(values, 201)
 
@@ -519,7 +561,7 @@ class GestorAPI(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    get_database().close()
+    database().close()
 
     print(
         f"Gestor Máquinas API iniciada na porta {PORT}"
