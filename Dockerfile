@@ -2,8 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY . .
+COPY servidor.py .
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "if [ -f servidor.py ]; then python3 servidor.py; else python3 server.py; fi"]
+CMD ["python3", "servidor.py"]
