@@ -5,21 +5,18 @@ import json
 import os
 import sqlite3
 import time
-
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
 
-DB_FILE = "gestor_maquinas.db"
-
-API_PORT = int(os.environ.get("PORT", "8080"))
+DATABASE = "gestor_maquinas.db"
+PORT = int(os.environ.get("PORT", "8080"))
 
 ADMIN_USER = os.environ.get("GESTOR_ADMIN_USER", "julio")
 ADMIN_PASSWORD = os.environ.get(
     "GESTOR_ADMIN_PASSWORD",
     "change-this-password"
 )
-
 TOKEN_SECRET = os.environ.get(
     "GESTOR_TOKEN_SECRET",
     "change-this-token-secret"
@@ -32,7 +29,6 @@ USERS = {
         "password": ADMIN_PASSWORD,
         "client": ""
     },
-
     "celso": {
         "name": "Celso",
         "role": "Técnico",
@@ -42,7 +38,6 @@ USERS = {
         ),
         "client": ""
     },
-
     "daniel": {
         "name": "Daniel",
         "role": "Técnico",
@@ -52,7 +47,6 @@ USERS = {
         ),
         "client": ""
     },
-
     "nuno": {
         "name": "Nuno Voabil",
         "role": "Cliente",
@@ -62,7 +56,6 @@ USERS = {
         ),
         "client": "Nuno Voabil"
     },
-
     "cinderella": {
         "name": "Colégio Cinderella",
         "role": "Cliente",
@@ -74,7 +67,7 @@ USERS = {
     }
 }
 
-TABLES = {
+FIELDS = {
     "machines": [
         "model",
         "serial",
@@ -85,13 +78,11 @@ TABLES = {
         "toner",
         "notes"
     ],
-
     "clients": [
         "name",
         "phone",
         "location"
     ],
-
     "maintenance": [
         "date",
         "machine",
@@ -100,7 +91,6 @@ TABLES = {
         "status",
         "notes"
     ],
-
     "stock": [
         "name",
         "compatibility",
@@ -110,12 +100,11 @@ TABLES = {
 }
 
 
-def database():
-    connection = sqlite3.connect(DB_FILE)
+def get_database():
+    connection = sqlite3.connect(DATABASE)
     connection.row_factory = sqlite3.Row
 
-    connection.executescript(
-        """
+    connection.executescript("""
         CREATE TABLE IF NOT EXISTS machines (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             model TEXT,
@@ -152,53 +141,75 @@ def database():
             quantity INTEGER DEFAULT 0,
             minimum INTEGER DEFAULT 0
         );
-        """
+    """)
+
+    add_missing_columns(
+        connection,
+        "machines",
+        {
+            "tech": "TEXT",
+            "toner": "TEXT",
+            "notes": "TEXT"
+        }
     )
 
     connection.commit()
     return connection
 
 
+def add_missing_columns(connection, table, columns):
+    existing = connection.execute(
+        f"PRAGMA table_info({table})"
+    ).fetchall()
+
+    existing_names = {
+        row["name"] for row in existing
+    }
+
+    for column, data_type in columns.items():
+        if column not in existing_names:
+            connection.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {data_type}"
+            )
+
+
 def create_token(username):
-    expiration = int(time.time()) + 86400
-    payload = f"{username}:{expiration}"
+    expires = int(time.time()) + 86400
+    payload = f"{username}:{expires}"
 
     signature = hmac.new(
-        TOKEN_SECRET.encode("utf-8"),
-        payload.encode("utf-8"),
+        TOKEN_SECRET.encode(),
+        payload.encode(),
         hashlib.sha256
     ).hexdigest()
 
-    raw_token = f"{payload}:{signature}"
+    value = f"{payload}:{signature}"
 
     return base64.urlsafe_b64encode(
-        raw_token.encode("utf-8")
-    ).decode("utf-8")
+        value.encode()
+    ).decode()
 
 
-def read_token(token):
+def get_username_from_token(token):
     try:
         decoded = base64.urlsafe_b64decode(
-            token.encode("utf-8")
-        ).decode("utf-8")
+            token.encode()
+        ).decode()
 
-        username, expiration, signature = decoded.rsplit(":", 2)
+        username, expires, signature = decoded.rsplit(":", 2)
 
-        payload = f"{username}:{expiration}"
+        payload = f"{username}:{expires}"
 
-        expected_signature = hmac.new(
-            TOKEN_SECRET.encode("utf-8"),
-            payload.encode("utf-8"),
+        expected = hmac.new(
+            TOKEN_SECRET.encode(),
+            payload.encode(),
             hashlib.sha256
         ).hexdigest()
 
-        if int(expiration) <= int(time.time()):
+        if int(expires) <= int(time.time()):
             return None
 
-        if not hmac.compare_digest(
-            signature,
-            expected_signature
-        ):
+        if not hmac.compare_digest(signature, expected):
             return None
 
         if username not in USERS:
@@ -212,23 +223,19 @@ def read_token(token):
 
 class GestorAPI(BaseHTTPRequestHandler):
 
-    def set_headers(self, content_type=True):
-        if content_type:
-            self.send_header(
-                "Content-Type",
-                "application/json; charset=utf-8"
-            )
-
+    def send_headers(self):
+        self.send_header(
+            "Content-Type",
+            "application/json; charset=utf-8"
+        )
         self.send_header(
             "Access-Control-Allow-Origin",
             "*"
         )
-
         self.send_header(
             "Access-Control-Allow-Headers",
             "Content-Type, Authorization"
         )
-
         self.send_header(
             "Access-Control-Allow-Methods",
             "GET, POST, OPTIONS"
@@ -236,33 +243,33 @@ class GestorAPI(BaseHTTPRequestHandler):
 
     def send_json(self, data, status=200):
         self.send_response(status)
-        self.set_headers()
+        self.send_headers()
         self.end_headers()
 
-        response = json.dumps(
-            data,
-            ensure_ascii=False
-        ).encode("utf-8")
+        self.wfile.write(
+            json.dumps(
+                data,
+                ensure_ascii=False
+            ).encode()
+        )
 
-        self.wfile.write(response)
-
-    def get_json_body(self):
+    def read_body(self):
         try:
-            content_length = int(
+            size = int(
                 self.headers.get("Content-Length", "0")
             )
 
-            raw_body = self.rfile.read(content_length)
+            content = self.rfile.read(size)
 
-            if not raw_body:
+            if not content:
                 return {}
 
-            return json.loads(raw_body.decode("utf-8"))
+            return json.loads(content.decode())
 
         except Exception:
             return {}
 
-    def current_user(self):
+    def get_logged_user(self):
         authorization = self.headers.get(
             "Authorization",
             ""
@@ -271,16 +278,11 @@ class GestorAPI(BaseHTTPRequestHandler):
         if not authorization.startswith("Bearer "):
             return None
 
-        token = authorization.replace(
-            "Bearer ",
-            "",
-            1
-        ).strip()
-
-        return read_token(token)
+        token = authorization[7:]
+        return get_username_from_token(token)
 
     def require_login(self):
-        username = self.current_user()
+        username = self.get_logged_user()
 
         if not username:
             self.send_json(
@@ -289,7 +291,6 @@ class GestorAPI(BaseHTTPRequestHandler):
                 },
                 401
             )
-
             return None
 
         return username
@@ -307,52 +308,13 @@ class GestorAPI(BaseHTTPRequestHandler):
                 },
                 403
             )
-
             return None
 
         return username
 
-    def visible_rows(self, table, username):
-        connection = database()
-
-        rows = connection.execute(
-            f"SELECT * FROM {table} ORDER BY id DESC"
-        ).fetchall()
-
-        connection.close()
-
-        data = [dict(row) for row in rows]
-
-        user = USERS[username]
-
-        if user["role"] == "Cliente":
-            if table == "machines":
-                data = [
-                    item for item in data
-                    if item.get("client") == user["client"]
-                ]
-
-            elif table == "maintenance":
-                data = [
-                    item for item in data
-                    if item.get("client") == user["client"]
-                    or item.get("machine") == user["client"]
-                ]
-
-            elif table == "clients":
-                data = [
-                    item for item in data
-                    if item.get("name") == user["client"]
-                ]
-
-            elif table == "stock":
-                data = []
-
-        return data
-
     def do_OPTIONS(self):
         self.send_response(204)
-        self.set_headers(content_type=False)
+        self.send_headers()
         self.end_headers()
 
     def do_GET(self):
@@ -362,11 +324,9 @@ class GestorAPI(BaseHTTPRequestHandler):
             self.send_json(
                 {
                     "status": "ok",
-                    "app": "Gestor Máquinas API",
-                    "version": "2.0"
+                    "app": "Gestor Máquinas API"
                 }
             )
-
             return
 
         username = self.require_login()
@@ -385,7 +345,6 @@ class GestorAPI(BaseHTTPRequestHandler):
                     "client": user["client"]
                 }
             )
-
             return
 
         if route == "users":
@@ -396,42 +355,69 @@ class GestorAPI(BaseHTTPRequestHandler):
                     },
                     403
                 )
-
                 return
 
-            users_response = []
+            result = []
 
-            for user_id, user_data in USERS.items():
-                users_response.append(
+            for user_id, user in USERS.items():
+                result.append(
                     {
                         "username": user_id,
-                        "name": user_data["name"],
-                        "role": user_data["role"],
-                        "client": user_data["client"],
+                        "name": user["name"],
+                        "role": user["role"],
+                        "client": user["client"],
                         "status": "Ativo"
                     }
                 )
 
-            self.send_json(users_response)
+            self.send_json(result)
             return
 
-        if route not in TABLES:
+        if route not in FIELDS:
             self.send_json(
                 {
                     "error": "Rota não encontrada"
                 },
                 404
             )
-
             return
 
-        self.send_json(
-            self.visible_rows(route, username)
-        )
+        connection = get_database()
+
+        rows = connection.execute(
+            f"SELECT * FROM {route} ORDER BY id DESC"
+        ).fetchall()
+
+        connection.close()
+
+        result = [dict(row) for row in rows]
+
+        user = USERS[username]
+
+        if user["role"] == "Cliente":
+            if route == "machines":
+                result = [
+                    item for item in result
+                    if item.get("client") == user["client"]
+                ]
+
+            elif route == "clients":
+                result = [
+                    item for item in result
+                    if item.get("name") == user["client"]
+                ]
+
+            elif route == "maintenance":
+                result = []
+
+            elif route == "stock":
+                result = []
+
+        self.send_json(result)
 
     def do_POST(self):
         route = urlparse(self.path).path.strip("/")
-        data = self.get_json_body()
+        data = self.read_body()
 
         if route == "login":
             username = str(
@@ -451,7 +437,6 @@ class GestorAPI(BaseHTTPRequestHandler):
                     },
                     401
                 )
-
                 return
 
             if not hmac.compare_digest(
@@ -464,7 +449,6 @@ class GestorAPI(BaseHTTPRequestHandler):
                     },
                     401
                 )
-
                 return
 
             self.send_json(
@@ -476,7 +460,6 @@ class GestorAPI(BaseHTTPRequestHandler):
                     "client": user["client"]
                 }
             )
-
             return
 
         username = self.require_admin()
@@ -484,21 +467,18 @@ class GestorAPI(BaseHTTPRequestHandler):
         if not username:
             return
 
-        if route not in TABLES:
+        if route not in FIELDS:
             self.send_json(
                 {
                     "error": "Rota não encontrada"
                 },
                 404
             )
-
             return
 
-        allowed_fields = TABLES[route]
+        values = {}
 
-        clean_data = {}
-
-        for field in allowed_fields:
+        for field in FIELDS[route]:
             value = data.get(field, "")
 
             if field in ["counter", "quantity", "minimum"]:
@@ -507,15 +487,14 @@ class GestorAPI(BaseHTTPRequestHandler):
                 except Exception:
                     value = 0
 
-            clean_data[field] = value
+            values[field] = value
 
-        columns = ",".join(clean_data.keys())
+        columns = ",".join(values.keys())
         placeholders = ",".join(
-            ["?"] * len(clean_data)
+            ["?"] * len(values)
         )
-        values = list(clean_data.values())
 
-        connection = database()
+        connection = get_database()
 
         cursor = connection.execute(
             f"""
@@ -523,48 +502,31 @@ class GestorAPI(BaseHTTPRequestHandler):
             ({columns})
             VALUES ({placeholders})
             """,
-            values
+            list(values.values())
         )
 
         connection.commit()
 
         new_id = cursor.lastrowid
-
         connection.close()
 
-        clean_data["id"] = new_id
+        values["id"] = new_id
 
-        self.send_json(
-            clean_data,
-            201
-        )
+        self.send_json(values, 201)
 
     def log_message(self, format_string, *args):
-        print(
-            f"{self.address_string()} - "
-            f"{format_string % args}"
-        )
+        print(format_string % args)
 
 
 if __name__ == "__main__":
-    database().close()
-
-    if ADMIN_PASSWORD == "change-this-password":
-        print(
-            "AVISO: configure GESTOR_ADMIN_PASSWORD no Render."
-        )
-
-    if TOKEN_SECRET == "change-this-token-secret":
-        print(
-            "AVISO: configure GESTOR_TOKEN_SECRET no Render."
-        )
+    get_database().close()
 
     print(
-        f"Gestor Máquinas API iniciado na porta {API_PORT}"
+        f"Gestor Máquinas API iniciada na porta {PORT}"
     )
 
     server = HTTPServer(
-        ("0.0.0.0", API_PORT),
+        ("0.0.0.0", PORT),
         GestorAPI
     )
 
